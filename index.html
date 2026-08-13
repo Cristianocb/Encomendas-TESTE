@@ -70,6 +70,7 @@
   .capture-btn:active { background: #1d4ed8; }
   .capture-btn:disabled { background: #334155; color: #64748b; }
   input[type="file"] { display: none; }
+  #cameraBox video { transform: none; }
   #preview {
     width: 100%;
     border-radius: 12px;
@@ -160,9 +161,21 @@
   <input type="password" id="apiKey" placeholder="Cole sua API key aqui">
   <div class="key-hint">Gere gratuitamente em aistudio.google.com. Fica salva só neste aparelho.</div>
 
-  <button type="button" class="capture-btn" id="captureBtn">📷 Tirar foto da etiqueta</button>
-  <input type="file" id="fileInput" accept="image/*" capture="environment">
+  <button type="button" class="capture-btn" id="captureBtn">📷 Abrir câmera</button>
+  <input type="file" id="fileInput" accept="image/*">
 
+  <div id="cameraBox" style="display:none; margin-top:14px;">
+    <video id="camera" autoplay playsinline muted
+      style="width:100%; border-radius:12px; background:#000; max-height:360px; object-fit:cover;"></video>
+    <button type="button" class="capture-btn" id="takePhotoBtn" style="margin-top:10px;">
+      📸 Capturar foto
+    </button>
+    <button type="button" class="reset-btn" id="closeCameraBtn" style="display:block;">
+      Fechar câmera
+    </button>
+  </div>
+
+  <canvas id="cameraCanvas" style="display:none;"></canvas>
   <img id="preview" alt="Prévia da foto">
 
   <div id="status"><span class="spinner"></span><span id="statusText">Analisando...</span></div>
@@ -179,6 +192,12 @@ const apiKeyInput = document.getElementById('apiKey');
 const captureBtn = document.getElementById('captureBtn');
 const fileInput = document.getElementById('fileInput');
 const preview = document.getElementById('preview');
+const cameraBox = document.getElementById('cameraBox');
+const camera = document.getElementById('camera');
+const cameraCanvas = document.getElementById('cameraCanvas');
+const takePhotoBtn = document.getElementById('takePhotoBtn');
+const closeCameraBtn = document.getElementById('closeCameraBtn');
+let cameraStream = null;
 const statusEl = document.getElementById('status');
 const statusText = document.getElementById('statusText');
 const resultEl = document.getElementById('result');
@@ -192,29 +211,103 @@ apiKeyInput.addEventListener('change', () => {
   localStorage.setItem('gemini_api_key', apiKeyInput.value.trim());
 });
 
-captureBtn.addEventListener('click', () => {
+captureBtn.addEventListener('click', async () => {
   const key = apiKeyInput.value.trim();
   if (!key) {
     showError('Cole sua API key do Gemini antes de tirar a foto.');
     apiKeyInput.focus();
     return;
   }
-  fileInput.click();
+
+  errorEl.style.display = 'none';
+
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      fileInput.click();
+      return;
+    }
+
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    });
+
+    camera.srcObject = cameraStream;
+    cameraBox.style.display = 'block';
+    captureBtn.style.display = 'none';
+
+    await camera.play();
+  } catch (err) {
+    console.warn('Câmera interna indisponível:', err);
+    showError('Não foi possível abrir a câmera dentro da página. Você pode escolher uma foto da galeria.');
+    fileInput.click();
+  }
+});
+
+takePhotoBtn.addEventListener('click', async () => {
+  if (!cameraStream) return;
+
+  const width = camera.videoWidth;
+  const height = camera.videoHeight;
+
+  if (!width || !height) {
+    showError('A câmera ainda não está pronta. Aguarde um instante e tente novamente.');
+    return;
+  }
+
+  cameraCanvas.width = width;
+  cameraCanvas.height = height;
+
+  const ctx = cameraCanvas.getContext('2d');
+  ctx.drawImage(camera, 0, 0, width, height);
+
+  cameraCanvas.toBlob(async (blob) => {
+    if (!blob) {
+      showError('Não consegui capturar a foto.');
+      return;
+    }
+
+    fecharCamera();
+
+    const file = new File([blob], 'etiqueta.jpg', { type: 'image/jpeg' });
+    await processarFoto(file);
+  }, 'image/jpeg', 0.85);
+});
+
+closeCameraBtn.addEventListener('click', () => {
+  fecharCamera();
+});
+
+function fecharCamera() {
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(track => track.stop());
+    cameraStream = null;
+  }
+  camera.srcObject = null;
+  cameraBox.style.display = 'none';
+  captureBtn.style.display = 'block';
+}
+
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  await processarFoto(file);
+  e.target.value = '';
 });
 
 resetBtn.addEventListener('click', () => {
+  fecharCamera();
   resultEl.style.display = 'none';
   resultEl.innerHTML = '';
   errorEl.style.display = 'none';
   preview.style.display = 'none';
   resetBtn.style.display = 'none';
   captureBtn.disabled = false;
-});
-
-fileInput.addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  await processarFoto(file);
 });
 
 async function processarFoto(file) {
