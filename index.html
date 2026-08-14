@@ -70,7 +70,6 @@
   .capture-btn:active { background: #1d4ed8; }
   .capture-btn:disabled { background: #334155; color: #64748b; }
   input[type="file"] { display: none; }
-  #cameraBox video { transform: none; }
   #preview {
     width: 100%;
     border-radius: 12px;
@@ -149,6 +148,47 @@
     color: #94a3b8;
     font-size: 14px;
   }
+  #cameraWrap {
+    display: none;
+    margin-top: 14px;
+  }
+  #video {
+    width: 100%;
+    border-radius: 12px;
+    background: #000;
+    max-height: 360px;
+    object-fit: cover;
+  }
+  .camera-controls {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .snap-btn {
+    flex: 1;
+    padding: 14px;
+    border: none;
+    border-radius: 10px;
+    background: #16a34a;
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .cancel-btn {
+    padding: 14px 18px;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 15px;
+  }
+  .fallback-link {
+    display: none;
+    text-align: center;
+    font-size: 13px;
+    color: #60a5fa;
+    margin-top: 12px;
+  }
 </style>
 </head>
 <body>
@@ -161,21 +201,19 @@
   <input type="password" id="apiKey" placeholder="Cole sua API key aqui">
   <div class="key-hint">Gere gratuitamente em aistudio.google.com. Fica salva só neste aparelho.</div>
 
-  <button type="button" class="capture-btn" id="captureBtn">📷 Abrir câmera</button>
+  <button type="button" class="capture-btn" id="captureBtn">📷 Tirar foto da etiqueta</button>
   <input type="file" id="fileInput" accept="image/*">
 
-  <div id="cameraBox" style="display:none; margin-top:14px;">
-    <video id="camera" autoplay playsinline muted
-      style="width:100%; border-radius:12px; background:#000; max-height:360px; object-fit:cover;"></video>
-    <button type="button" class="capture-btn" id="takePhotoBtn" style="margin-top:10px;">
-      📸 Capturar foto
-    </button>
-    <button type="button" class="reset-btn" id="closeCameraBtn" style="display:block;">
-      Fechar câmera
-    </button>
+  <div id="cameraWrap">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="camera-controls">
+      <button type="button" class="snap-btn" id="snapBtn">Capturar</button>
+      <button type="button" class="cancel-btn" id="cancelCameraBtn">Cancelar</button>
+    </div>
   </div>
 
-  <canvas id="cameraCanvas" style="display:none;"></canvas>
+  <a href="#" class="fallback-link" id="fallbackLink">A câmera não abriu? Escolher foto da galeria</a>
+
   <img id="preview" alt="Prévia da foto">
 
   <div id="status"><span class="spinner"></span><span id="statusText">Analisando...</span></div>
@@ -192,17 +230,18 @@ const apiKeyInput = document.getElementById('apiKey');
 const captureBtn = document.getElementById('captureBtn');
 const fileInput = document.getElementById('fileInput');
 const preview = document.getElementById('preview');
-const cameraBox = document.getElementById('cameraBox');
-const camera = document.getElementById('camera');
-const cameraCanvas = document.getElementById('cameraCanvas');
-const takePhotoBtn = document.getElementById('takePhotoBtn');
-const closeCameraBtn = document.getElementById('closeCameraBtn');
-let cameraStream = null;
 const statusEl = document.getElementById('status');
 const statusText = document.getElementById('statusText');
 const resultEl = document.getElementById('result');
 const errorEl = document.getElementById('error');
 const resetBtn = document.getElementById('resetBtn');
+const cameraWrap = document.getElementById('cameraWrap');
+const video = document.getElementById('video');
+const snapBtn = document.getElementById('snapBtn');
+const cancelCameraBtn = document.getElementById('cancelCameraBtn');
+const fallbackLink = document.getElementById('fallbackLink');
+
+let currentStream = null;
 
 // Salva a chave localmente (só neste navegador) pra não precisar colar toda vez
 const savedKey = localStorage.getItem('gemini_api_key');
@@ -218,130 +257,117 @@ captureBtn.addEventListener('click', async () => {
     apiKeyInput.focus();
     return;
   }
-
   errorEl.style.display = 'none';
-
-  try {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      fileInput.click();
-      return;
-    }
-
-    cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: 'environment' },
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      },
-      audio: false
-    });
-
-    camera.srcObject = cameraStream;
-    cameraBox.style.display = 'block';
-    captureBtn.style.display = 'none';
-
-    await camera.play();
-  } catch (err) {
-    console.warn('Câmera interna indisponível:', err);
-    showError('Não foi possível abrir a câmera dentro da página. Você pode escolher uma foto da galeria.');
-    fileInput.click();
-  }
+  await abrirCamera();
 });
 
-takePhotoBtn.addEventListener('click', async () => {
-  if (!cameraStream) return;
-
-  const width = camera.videoWidth;
-  const height = camera.videoHeight;
-
-  if (!width || !height) {
-    showError('A câmera ainda não está pronta. Aguarde um instante e tente novamente.');
+async function abrirCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showError('Este navegador não suporta câmera embutida. Use o link abaixo para escolher da galeria.');
+    fallbackLink.style.display = 'block';
     return;
   }
-
-  cameraCanvas.width = width;
-  cameraCanvas.height = height;
-
-  const ctx = cameraCanvas.getContext('2d');
-  ctx.drawImage(camera, 0, 0, width, height);
-
-  cameraCanvas.toBlob(async (blob) => {
-    if (!blob) {
-      showError('Não consegui capturar a foto.');
-      return;
-    }
-
-    fecharCamera();
-
-    const file = new File([blob], 'etiqueta.jpg', { type: 'image/jpeg' });
-    await processarFoto(file);
-  }, 'image/jpeg', 0.85);
-});
-
-closeCameraBtn.addEventListener('click', () => {
-  fecharCamera();
-});
-
-function fecharCamera() {
-  if (cameraStream) {
-    cameraStream.getTracks().forEach(track => track.stop());
-    cameraStream = null;
+  try {
+    currentStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' },
+      audio: false
+    });
+    video.srcObject = currentStream;
+    cameraWrap.style.display = 'block';
+    captureBtn.style.display = 'none';
+    preview.style.display = 'none';
+    resultEl.style.display = 'none';
+  } catch (err) {
+    showError('Não consegui abrir a câmera (' + err.message + '). Use o link abaixo para escolher da galeria.');
+    fallbackLink.style.display = 'block';
   }
-  camera.srcObject = null;
-  cameraBox.style.display = 'none';
+}
+
+function pararCamera() {
+  if (currentStream) {
+    currentStream.getTracks().forEach(t => t.stop());
+    currentStream = null;
+  }
+  cameraWrap.style.display = 'none';
   captureBtn.style.display = 'block';
 }
 
-fileInput.addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
+cancelCameraBtn.addEventListener('click', pararCamera);
 
-  await processarFoto(file);
-  e.target.value = '';
+snapBtn.addEventListener('click', async () => {
+  const canvas = document.createElement('canvas');
+  const maxDim = 1200;
+  let { videoWidth: width, videoHeight: height } = video;
+  if (width > height && width > maxDim) {
+    height = Math.round(height * (maxDim / width));
+    width = maxDim;
+  } else if (height > maxDim) {
+    width = Math.round(width * (maxDim / height));
+    height = maxDim;
+  }
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext('2d').drawImage(video, 0, 0, width, height);
+  const base64 = canvas.toDataURL('image/jpeg', 0.8);
+
+  pararCamera();
+  await processarFotoBase64(base64);
+});
+
+fallbackLink.addEventListener('click', (e) => {
+  e.preventDefault();
+  const key = apiKeyInput.value.trim();
+  if (!key) {
+    showError('Cole sua API key do Gemini antes de escolher a foto.');
+    apiKeyInput.focus();
+    return;
+  }
+  fileInput.click();
 });
 
 resetBtn.addEventListener('click', () => {
-  fecharCamera();
   resultEl.style.display = 'none';
   resultEl.innerHTML = '';
   errorEl.style.display = 'none';
+  fallbackLink.style.display = 'none';
   preview.style.display = 'none';
   resetBtn.style.display = 'none';
+  captureBtn.style.display = 'block';
   captureBtn.disabled = false;
 });
 
-async function processarFoto(file) {
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) {
+    showError('Nenhuma imagem foi selecionada.');
+    return;
+  }
+  const base64 = await comprimirImagem(file, 1200, 0.8);
+  await processarFotoBase64(base64);
+});
+
+async function processarFotoBase64(base64) {
   errorEl.style.display = 'none';
   resultEl.style.display = 'none';
   resultEl.innerHTML = '';
 
-  // Reduz o tamanho/qualidade da imagem: fica mais rápido, usa menos
-  // memória (evita o navegador recarregar a página em celulares mais
-  // fracos) e economiza cota da API.
-  const base64 = await comprimirImagem(file, 1200, 0.8);
   preview.src = base64;
   preview.style.display = 'block';
-
-  // Guarda o estado ANTES de chamar a IA. Se o navegador recarregar
-  // a página nesse meio tempo (comum no iOS logo após usar a câmera),
-  // ao voltar a página detecta isso e continua sozinha, sem precisar
-  // tirar a foto de novo.
-  sessionStorage.setItem('pending_photo', base64);
 
   captureBtn.disabled = true;
   statusEl.style.display = 'block';
   statusText.textContent = 'Analisando etiqueta...';
 
   try {
-    const data = await reconhecerEtiqueta(base64, apiKeyInput.value.trim());
+    const key = apiKeyInput.value.trim();
+    const data = await reconhecerEtiqueta(base64, key);
     mostrarResultado(data);
-    sessionStorage.removeItem('pending_photo');
   } catch (err) {
     showError('Erro ao consultar a IA: ' + err.message);
-    sessionStorage.removeItem('pending_photo');
   } finally {
     statusEl.style.display = 'none';
     captureBtn.disabled = false;
+    captureBtn.style.display = 'block';
     resetBtn.style.display = 'block';
   }
 }
@@ -373,38 +399,6 @@ function comprimirImagem(file, maxDim, qualidade) {
     reader.readAsDataURL(file);
   });
 }
-
-// Ao carregar a página, verifica se havia uma foto sendo processada
-// quando o navegador recarregou (ex: iOS matando a aba durante o uso
-// da câmera). Se houver, retoma automaticamente a análise.
-window.addEventListener('load', async () => {
-  const pending = sessionStorage.getItem('pending_photo');
-  if (!pending) return;
-
-  const key = apiKeyInput.value.trim();
-  if (!key) {
-    sessionStorage.removeItem('pending_photo');
-    return;
-  }
-
-  preview.src = pending;
-  preview.style.display = 'block';
-  captureBtn.disabled = true;
-  statusEl.style.display = 'block';
-  statusText.textContent = 'A página recarregou — retomando análise...';
-
-  try {
-    const data = await reconhecerEtiqueta(pending, key);
-    mostrarResultado(data);
-  } catch (err) {
-    showError('Erro ao consultar a IA: ' + err.message);
-  } finally {
-    sessionStorage.removeItem('pending_photo');
-    statusEl.style.display = 'none';
-    captureBtn.disabled = false;
-    resetBtn.style.display = 'block';
-  }
-});
 
 async function reconhecerEtiqueta(base64DataUrl, apiKey) {
   const base64Data = base64DataUrl.split(',')[1];
